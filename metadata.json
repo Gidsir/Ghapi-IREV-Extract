@@ -1,0 +1,5 @@
+{
+  "name": "ElectionForm AI Extractor",
+  "description": "A high-performance tool using Gemini 2.5 Flash to batch extract data from handwritten EC 8A election forms into CSV format.",
+  "requestFramePermissions": []
+}
