@@ -6,7 +6,9 @@ interface DataTableProps {
   onDelete: (id: string) => void;
 }
 
-export const DataTable: React.FC<DataTableProps> = ({ records, onDelete }) => {
+// Optimization: Use React.memo so the table doesn't fully re-render 
+// every time the parent state changes, unless 'records' prop actually changes.
+export const DataTable: React.FC<DataTableProps> = React.memo(({ records, onDelete }) => {
   if (records.length === 0) return null;
 
   return (
@@ -32,7 +34,12 @@ export const DataTable: React.FC<DataTableProps> = ({ records, onDelete }) => {
               <td className="px-3 py-2 whitespace-nowrap sticky left-0 bg-white z-10 border-r">
                 <div className="flex items-center space-x-2">
                   {record.imageUrl && (
-                    <img src={record.imageUrl} alt="thumb" className="w-8 h-8 object-cover rounded" />
+                    <img 
+                      src={record.imageUrl} 
+                      alt="thumb" 
+                      loading="lazy" 
+                      className="w-8 h-8 object-cover rounded" 
+                    />
                   )}
                   <span className="truncate max-w-[150px]" title={record.filename}>{record.filename}</span>
                 </div>
@@ -76,4 +83,4 @@ export const DataTable: React.FC<DataTableProps> = ({ records, onDelete }) => {
       </table>
     </div>
   );
-};
+});

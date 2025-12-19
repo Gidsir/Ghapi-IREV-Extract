@@ -1,18 +1,41 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ElectionData, TARGET_PARTIES } from "../types";
 
-// Helper to convert file to base64
-const fileToGenerativePart = async (file: File): Promise<string> => {
+// Helper: Resize and compress image before sending to API
+// This drastically reduces payload size and upload time.
+const compressAndConvertToBase64 = async (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = reader.result as string;
-      // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
-      const base64Data = base64String.split(',')[1];
-      resolve(base64Data);
-    };
-    reader.onerror = reject;
     reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        // Max dimension 1024px is sufficient for OCR, vastly smaller than camera 4000px+
+        const MAX_WIDTH = 1024;
+        const scaleSize = MAX_WIDTH / img.width;
+        
+        // Only resize if image is larger than limit
+        if (scaleSize < 1) {
+            canvas.width = MAX_WIDTH;
+            canvas.height = img.height * scaleSize;
+        } else {
+            canvas.width = img.width;
+            canvas.height = img.height;
+        }
+
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // Compress to JPEG at 0.7 quality
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        // Remove prefix to get raw base64
+        resolve(dataUrl.split(',')[1]);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
   });
 };
 
@@ -55,7 +78,9 @@ export const extractDataFromImage = async (file: File): Promise<ElectionData> =>
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  const base64Data = await fileToGenerativePart(file);
+  
+  // Use the compressed image data
+  const base64Data = await compressAndConvertToBase64(file);
 
   const prompt = `
     Analyze this image of an INEC EC 8A Statement of Poll Result form.
@@ -78,14 +103,14 @@ export const extractDataFromImage = async (file: File): Promise<ElectionData> =>
       model: 'gemini-2.5-flash',
       contents: {
         parts: [
-          { inlineData: { mimeType: file.type, data: base64Data } },
+          { inlineData: { mimeType: "image/jpeg", data: base64Data } },
           { text: prompt }
         ]
       },
       config: {
         responseMimeType: "application/json",
         responseSchema: responseSchema,
-        temperature: 0.1, // Low temperature for higher deterministic accuracy
+        temperature: 0.1,
       }
     });
 

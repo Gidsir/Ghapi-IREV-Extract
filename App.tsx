@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Dropzone } from './components/Dropzone';
 import { DataTable } from './components/DataTable';
 import { StatsCard } from './components/StatsCard';
@@ -10,7 +10,6 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [csvUrl, setCsvUrl] = useState<string | null>(null);
   
-  // Ref to handle cancellation if needed, or keeping track of active batch
   const processingRef = useRef(false);
 
   const handleFilesSelected = (files: File[]) => {
@@ -19,53 +18,73 @@ export default function App() {
       filename: file.name,
       status: 'pending',
       imageUrl: URL.createObjectURL(file),
-      // Attach actual file object to a non-serializable property in memory (not in state for simplicity, 
-      // but here we just need to pass it to the processor immediately or store in a separate map. 
-      // For this demo, we'll process from state, but we need the file. 
-      // A better way is to start processing immediately or add to a queue.)
     }));
 
     setRecords(prev => [...prev, ...newRecords]);
     
-    // Trigger processing for new files
-    // We pass the file objects directly to the processor via a temporary mechanism or closure
+    // Start batch processing
     processQueue(files, newRecords.map(r => r.id));
   };
 
   const processQueue = async (files: File[], recordIds: string[]) => {
-    if (processingRef.current) return; // Simple concurrency lock
+    if (processingRef.current) return;
     processingRef.current = true;
     setIsProcessing(true);
 
-    // Process sequentially to avoid hitting rate limits too hard (though Gemini handles concurrent requests well, browser limit is key)
-    // For 100k images, a backend is needed. For this demo, we do 1 by 1 or small batches.
+    // Optimization: Concurrency Limit
+    // Process 3 images at a time to maximize throughput without freezing the browser
+    const CONCURRENCY_LIMIT = 3;
+    const activePromises: Promise<void>[] = [];
+
+    const processSingleItem = async (file: File, id: string) => {
+        // Update status to processing
+        setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'processing' } : r));
+
+        try {
+            const data = await extractDataFromImage(file);
+            // Update status to success
+            setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'success', data } : r));
+        } catch (err: any) {
+            // Update status to error
+            setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'error', error: err.message || 'Extraction failed' } : r));
+        }
+    };
+
+    // Iterate through files with concurrency control
     for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const id = recordIds[i];
+        const file = files[i];
+        const id = recordIds[i];
 
-      setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'processing' } : r));
+        // If we hit the limit, wait for at least one to finish
+        if (activePromises.length >= CONCURRENCY_LIMIT) {
+            await Promise.race(activePromises);
+        }
 
-      try {
-        const data = await extractDataFromImage(file);
-        setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'success', data } : r));
-      } catch (err: any) {
-        setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'error', error: err.message || 'Extraction failed' } : r));
-      }
+        const promise = processSingleItem(file, id).then(() => {
+            // Remove self from active promises when done
+            const index = activePromises.indexOf(promise);
+            if (index > -1) activePromises.splice(index, 1);
+        });
+
+        activePromises.push(promise);
     }
+
+    // Wait for the final batch to finish
+    await Promise.all(activePromises);
 
     setIsProcessing(false);
     processingRef.current = false;
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = useCallback((id: string) => {
     setRecords(prev => {
         const record = prev.find(r => r.id === id);
         if (record && record.imageUrl) URL.revokeObjectURL(record.imageUrl);
         return prev.filter(r => r.id !== id);
     });
-  };
+  }, []);
 
-  const generateCSV = () => {
+  const generateCSV = useCallback(() => {
     const headers = [
       'Filename', 'Status', 'LGA', 'REGISTRATION AREA', 'POLLING UNIT', 'DELIMITATION',
       'Number of Voters on the Register',
@@ -101,7 +120,6 @@ export default function App() {
       ];
 
       const votesData = TARGET_PARTIES.map(party => d.votes[party] ?? 0);
-      
       return [...coreData, ...votesData].join(',');
     });
 
@@ -109,14 +127,14 @@ export default function App() {
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     setCsvUrl(url);
-  };
+  }, [records]);
 
-  // Regenerate CSV whenever records change successfully
+  // Regenerate CSV only when successful extractions change
   useEffect(() => {
     if (records.some(r => r.status === 'success')) {
       generateCSV();
     }
-  }, [records]);
+  }, [records, generateCSV]);
 
   const stats = {
     total: records.length,
@@ -170,7 +188,7 @@ export default function App() {
                <div className="w-full bg-gray-200 rounded-full h-2.5">
                   <div className="bg-primary h-2.5 rounded-full animate-pulse" style={{ width: '100%' }}></div>
                </div>
-               <p className="text-sm text-gray-500 mt-2 text-center">Processing images with Gemini Vision... Please wait.</p>
+               <p className="text-sm text-gray-500 mt-2 text-center">Processing images with Gemini Vision... (Batch Mode)</p>
             </div>
           )}
         </div>
